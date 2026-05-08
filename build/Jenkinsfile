@@ -1,0 +1,115 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'REPO_NAME',
+            choices: [
+                'spring-boot-jwt-kafka'
+            ],
+            description: 'Repository to build'
+        )
+
+        string(
+            name: 'BRANCH',
+            defaultValue: 'main',
+            description: 'Branch to build'
+        )
+
+        booleanParam(
+            name: 'RUN_TESTS',
+            defaultValue: true,
+            description: 'Run unit tests'
+        )
+    }
+
+    environment {
+        GITHUB_BASE_URL = 'https://github.com/jamp00-tech'
+        OCIR_REGION = 'sa-saopaulo-1.ocir.io'
+        OCIR_NAMESPACE = 'greg14puj5pf'
+    }
+
+    stages {
+        stage('Prepare Repository URL') {
+            steps {
+                script {
+                    env.REPO_URL = "${env.GITHUB_BASE_URL}/${params.REPO_NAME}.git"
+                    echo "Repository URL: ${env.REPO_URL}"
+                }
+            }
+        }
+
+        stage('Clone Application Repository') {
+            steps {
+                dir('app-repo') {
+                    git branch: params.BRANCH,
+                        url: env.REPO_URL
+                }
+            }
+        }
+
+        stage('Build Application') {
+            steps {
+                dir('app-repo') {
+                    script {
+                        if (params.RUN_TESTS) {
+                            sh 'mvn clean package'
+                        } else {
+                            sh 'mvn clean package -DskipTests'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                dir('app-repo') {
+                    script {
+                        env.IMAGE_TAG = "${env.OCIR_REGION}/${env.OCIR_NAMESPACE}/${params.REPO_NAME}:${env.BUILD_NUMBER}"
+        
+                        sh """
+                            docker build -t ${env.IMAGE_TAG} .
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Push Docker Image to OCIR') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'ocir-credentials',
+                    usernameVariable: 'OCIR_USER',
+                    passwordVariable: 'OCIR_TOKEN'
+                )]) {
+                    sh """
+                        echo "$OCIR_TOKEN" | docker login ${env.OCIR_REGION} -u "$OCIR_USER" --password-stdin
+                        docker push ${env.IMAGE_TAG}
+                        docker logout ${env.OCIR_REGION}
+                    """
+                }
+            }
+        }
+
+        stage('Archive Artifact') {
+            steps {
+                archiveArtifacts artifacts: 'app-repo/**/target/*.jar', fingerprint: true
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Build completed successfully"
+        }
+
+        failure {
+            echo "Build failed"
+        }
+
+        always {
+            cleanWs()
+        }
+    }
+}
