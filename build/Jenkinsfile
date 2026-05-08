@@ -66,7 +66,16 @@ pipeline {
             steps {
                 dir('app-repo') {
                     script {
-                        env.IMAGE_TAG = "${env.OCIR_REGION}/${env.OCIR_NAMESPACE}/${params.REPO_NAME}:${env.BUILD_NUMBER}"
+        
+                        def appVersion = sh(
+                            script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
+                            returnStdout: true
+                        ).trim()
+        
+                        env.IMAGE_TAG = "${env.OCIR_REGION}/${env.OCIR_NAMESPACE}/${params.REPO_NAME}:${appVersion}"
+        
+                        echo "Docker image version: ${appVersion}"
+                        echo "Full image tag: ${env.IMAGE_TAG}"
         
                         sh """
                             docker build -t ${env.IMAGE_TAG} .
@@ -75,7 +84,7 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Push Docker Image to OCIR') {
             steps {
                 withCredentials([usernamePassword(
