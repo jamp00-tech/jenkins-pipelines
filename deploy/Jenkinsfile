@@ -1,0 +1,125 @@
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+    }
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'local', 'staging', 'prod'],
+            description: 'Environment to deploy'
+        )
+
+        choice(
+            name: 'APP_NAME',
+            choices: ['spring-boot-jwt-kafka'],
+            description: 'Application to deploy'
+        )
+
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: '',
+            description: 'Docker image tag to deploy'
+        )
+    }
+
+    environment {
+        TERRAFORM_DIR        = "terraform-compute-runtime/envs/oci/${params.ENVIRONMENT}"
+        TFVARS_CREDENTIAL_ID = "terraform-${params.ENVIRONMENT}-tfvars"
+    }
+
+    stages {
+        stage('Validate parameters') {
+            steps {
+                script {
+                    if (!params.IMAGE_TAG?.trim()) {
+                        error "IMAGE_TAG is required"
+                    }
+                }
+            }
+        }
+
+        stage('Show deployment info') {
+            steps {
+                echo "Environment: ${params.ENVIRONMENT}"
+                echo "Application: ${params.APP_NAME}"
+                echo "Image tag: ${params.IMAGE_TAG}"
+                echo "Terraform dir: ${env.TERRAFORM_DIR}"
+            }
+        }
+
+        stage('Checkout Terraform repo') {
+            steps {
+                dir('terraform-compute-runtime') {
+                    git branch: 'main',
+                        url: 'https://github.com/jamp00-tech/terraform-compute-runtime.git'
+                }
+            }
+        }
+
+        stage('Terraform init') {
+            steps {
+                dir("${env.TERRAFORM_DIR}") {
+                    sh 'terraform init'
+                }
+            }
+        }
+
+        stage('Terraform validate') {
+            steps {
+                dir("${env.TERRAFORM_DIR}") {
+                    sh 'terraform validate'
+                }
+            }
+        }
+
+        stage('Terraform plan') {
+            steps {
+                withCredentials([
+                    file(credentialsId: 'terraform-dev-tfvars', variable: 'TFVARS_FILE'),
+                    file(credentialsId: 'oci-private-key', variable: 'OCI_PRIVATE_KEY')
+                ]) {
+                    dir("${env.TERRAFORM_DIR}") {
+                        sh '''
+                          export TF_VAR_private_key="$(cat "$OCI_PRIVATE_KEY")"
+                        
+                          terraform plan \
+                            -var-file="$TFVARS_FILE" \
+                            -var="app_name=${APP_NAME}" \
+                            -var="image_tag=${IMAGE_TAG}"
+                      '''
+                    }
+                }
+            }
+        }
+
+        stage('Terraform apply') {
+            steps {
+                withCredentials([
+                    file(credentialsId: "terraform-${params.ENVIRONMENT}-tfvars", variable: 'TFVARS_FILE'),
+                    file(credentialsId: 'oci-private-key', variable: 'OCI_PRIVATE_KEY')
+                ]) {
+                    dir("${env.TERRAFORM_DIR}") {
+                        sh '''
+                            export TF_VAR_private_key="$(cat "$OCI_PRIVATE_KEY")"
+                
+                            terraform apply -auto-approve \
+                              -var-file="$TFVARS_FILE" \
+                              -var="app_name=${APP_NAME}" \
+                              -var="image_tag=${IMAGE_TAG}"
+                        '''
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
