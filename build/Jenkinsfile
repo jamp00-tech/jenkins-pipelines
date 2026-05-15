@@ -5,7 +5,8 @@ pipeline {
         choice(
             name: 'REPO_NAME',
             choices: [
-                'spring-boot-jwt-kafka'
+                'spring-boot-jwt-kafka',
+                'python-binance-trading-bot Private'
             ],
             description: 'Repository to build'
         )
