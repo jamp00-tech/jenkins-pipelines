@@ -3,10 +3,19 @@ pipeline {
 
     parameters {
         choice(
+            name: 'BUILD_TOOL',
+            choices: [
+                'maven',
+                'others'
+            ],
+            description: 'Build tool'
+        )
+
+        choice(
             name: 'REPO_NAME',
             choices: [
                 'spring-boot-jwt-kafka',
-                'python-binance-trading-bot Private'
+                'python-binance-trading-bot'
             ],
             description: 'Repository to build'
         )
@@ -17,17 +26,27 @@ pipeline {
             description: 'Branch to build'
         )
 
+        choice(
+            name: 'GITHUB_ORG',
+            choices: [
+                'jamp00-tech',
+                'jamp00'
+            ],
+            description: 'Repository Organization to build'
+        )
+
         booleanParam(
             name: 'RUN_TESTS',
             defaultValue: true,
             description: 'Run unit tests'
         )
+
     }
 
     environment {
-        GITHUB_BASE_URL = 'https://github.com/jamp00-tech'
-        OCIR_REGION = 'sa-saopaulo-1.ocir.io'
-        OCIR_NAMESPACE = 'greg14puj5pf'
+        GITHUB_BASE_URL = "https://github.com/${params.GITHUB_ORG}"
+        OCIR_REGION = "sa-saopaulo-1.ocir.io"
+        OCIR_NAMESPACE = "greg14puj5pf"
     }
 
     stages {
@@ -44,6 +63,7 @@ pipeline {
             steps {
                 dir('app-repo') {
                     git branch: params.BRANCH,
+                        credentialsId: 'github-token',
                         url: env.REPO_URL
                 }
             }
@@ -53,11 +73,17 @@ pipeline {
             steps {
                 dir('app-repo') {
                     script {
-                        if (params.RUN_TESTS) {
-                            sh 'mvn clean package'
-                        } else {
-                            sh 'mvn clean package -DskipTests'
+                        if (params.BUILD_TOOL == 'maven') {
+                            if (params.RUN_TESTS) {
+                                sh 'mvn clean package'
+                            } else {
+                                sh 'mvn clean package -DskipTests'
+                            }
                         }
+                        if (params.BUILD_TOOL == 'others') {
+                            echo "Skipping local build step"
+                        }
+
                     }
                 }
             }
@@ -67,12 +93,20 @@ pipeline {
             steps {
                 dir('app-repo') {
                     script {
-        
-                        def appVersion = sh(
-                            script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
-                            returnStdout: true
-                        ).trim()
-        
+                        def appVersion = ""
+                        if (params.BUILD_TOOL == 'maven') {
+                            appVersion = sh(
+                                script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
+                                returnStdout: true
+                            ).trim()
+                        }
+                        if (params.BUILD_TOOL == 'others') {
+                            appVersion = sh(
+                                script: "grep '^release:' VERSION.yaml | awk '{print \$2}'",
+                                returnStdout: true
+                            ).trim()
+                        }
+                        currentBuild.displayName = "${params.REPO_NAME}:${appVersion}"
                         env.IMAGE_TAG = "${env.OCIR_REGION}/${env.OCIR_NAMESPACE}/${params.REPO_NAME}:${appVersion}"
         
                         echo "Docker image version: ${appVersion}"
@@ -104,7 +138,13 @@ pipeline {
 
         stage('Archive Artifact') {
             steps {
-                archiveArtifacts artifacts: 'app-repo/**/target/*.jar', fingerprint: true
+                script {
+                    if (params.BUILD_TOOL == 'maven') {
+                        archiveArtifacts artifacts: 'app-repo/**/target/*.jar', fingerprint: true
+                    } else {
+                        echo "Python app detected - no JAR artifact to archive"
+                    }
+                }
             }
         }
     }
